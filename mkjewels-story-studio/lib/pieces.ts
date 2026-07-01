@@ -1,6 +1,6 @@
 import { sql } from "@vercel/postgres";
 
-export type PieceStatus = "uploaded" | "processing" | "draft" | "approved";
+export type PieceStatus = "queued" | "processing" | "ready" | "approved" | "discarded";
 
 export type Piece = {
   id: string;
@@ -16,6 +16,8 @@ export type Piece = {
   long_story: string | null;
   final_short_story: string | null;
   final_long_story: string | null;
+  staff_notes: string | null;
+  error_message: string | null;
   generation_error: string | null;
   generation_error_at: string | null;
   is_edited: boolean | null;
@@ -29,6 +31,8 @@ export type InsertedPiece = Pick<Piece, "id" | "image_url" | "status" | "created
 export type PieceAttributes = {
   category: string;
   material: string;
+  goldTone?: string;
+  contentTone?: string;
   motifs: string[];
   style: string;
 };
@@ -39,6 +43,7 @@ export type PieceStoryUpdate = {
   attributes: PieceAttributes;
   shortStory: string;
   longStory: string;
+  staffNotes?: string | null;
 };
 
 export type ExportPiece = Pick<
@@ -59,7 +64,187 @@ export type ExportPiece = Pick<
   | "created_at"
 >;
 
+const pieceSelect = [
+  "id",
+  "image_url",
+  "sku",
+  "catalog_ref",
+  "status",
+  "detected_category",
+  "detected_material",
+  "detected_motifs",
+  "detected_style",
+  "short_story",
+  "long_story",
+  "final_short_story",
+  "final_long_story",
+  "staff_notes",
+  "error_message",
+  "generation_error",
+  "generation_error_at",
+  "is_edited",
+  "uploaded_by",
+  "created_at",
+  "updated_at"
+].join(",");
+
+const legacyPieceSelect = [
+  "id",
+  "image_url",
+  "sku",
+  "catalog_ref",
+  "status",
+  "detected_category",
+  "detected_material",
+  "detected_motifs",
+  "detected_style",
+  "short_story",
+  "long_story",
+  "final_short_story",
+  "final_long_story",
+  "generation_error",
+  "generation_error_at",
+  "is_edited",
+  "uploaded_by",
+  "created_at",
+  "updated_at"
+].join(",");
+
+const exportSelect = [
+  "id",
+  "sku",
+  "catalog_ref",
+  "status",
+  "detected_category",
+  "detected_material",
+  "detected_motifs",
+  "detected_style",
+  "short_story",
+  "long_story",
+  "final_short_story",
+  "final_long_story",
+  "staff_notes",
+  "error_message",
+  "is_edited",
+  "created_at"
+].join(",");
+
+function getSupabaseConfig() {
+  const url = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !serviceRoleKey) {
+    return null;
+  }
+
+  return {
+    url: url.replace(/\/$/, ""),
+    serviceRoleKey
+  };
+}
+
+async function supabaseRequest<T>(path: string, init: RequestInit = {}): Promise<T[]> {
+  const config = getSupabaseConfig();
+
+  if (!config) {
+    throw new Error("Database is not configured. Set Supabase URL and SUPABASE_SERVICE_ROLE_KEY, or POSTGRES_URL.");
+  }
+
+  const response = await fetch(`${config.url}/rest/v1/${path}`, {
+    ...init,
+    headers: {
+      apikey: config.serviceRoleKey,
+      Authorization: `Bearer ${config.serviceRoleKey}`,
+      "Content-Type": "application/json",
+      ...(init.headers ?? {})
+    },
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Supabase request failed with ${response.status}: ${detail.slice(0, 500)}`);
+  }
+
+  if (response.status === 204) {
+    return [];
+  }
+
+  return (await response.json()) as T[];
+}
+
+function shouldUseSupabase() {
+  return getSupabaseConfig() !== null;
+}
+
+function piecesPath(params: Record<string, string>) {
+  const searchParams = new URLSearchParams(params);
+  return `pieces?${searchParams.toString()}`;
+}
+
+function isMissingNewPieceColumn(error: unknown) {
+  return error instanceof Error && /column pieces\.(staff_notes|error_message) does not exist/.test(error.message);
+}
+
+function normalizeStatus(status: string): PieceStatus {
+  switch (status) {
+    case "uploaded":
+      return "queued";
+    case "draft":
+      return "ready";
+    case "queued":
+    case "processing":
+    case "ready":
+    case "approved":
+    case "discarded":
+      return status;
+    default:
+      return "queued";
+  }
+}
+
+function normalizePiece<T extends Piece>(piece: T): T {
+  return {
+    ...piece,
+    status: normalizeStatus(piece.status),
+    error_message: piece.error_message ?? piece.generation_error ?? null,
+    staff_notes: piece.staff_notes ?? null
+  };
+}
+
+function normalizePieces<T extends Piece>(pieces: T[]): T[] {
+  return pieces.map(normalizePiece);
+}
+
 export async function listPieces(): Promise<Piece[]> {
+  if (shouldUseSupabase()) {
+    try {
+      return normalizePieces(
+        await supabaseRequest<Piece>(
+          piecesPath({
+            select: pieceSelect,
+            order: "created_at.desc",
+            limit: "100"
+          })
+        )
+      );
+    } catch (error) {
+      if (!isMissingNewPieceColumn(error)) {
+        throw error;
+      }
+
+      return normalizePieces(
+        await supabaseRequest<Piece>(
+          piecesPath({
+            select: legacyPieceSelect,
+            order: "created_at.desc",
+            limit: "100"
+          })
+        )
+      );
+    }
+  }
+
   const result = await sql<Piece>`
     SELECT
       id,
@@ -75,6 +260,8 @@ export async function listPieces(): Promise<Piece[]> {
       long_story,
       final_short_story,
       final_long_story,
+      staff_notes,
+      error_message,
       generation_error,
       generation_error_at::text,
       is_edited,
@@ -86,10 +273,38 @@ export async function listPieces(): Promise<Piece[]> {
     LIMIT 100
   `;
 
-  return result.rows;
+  return normalizePieces(result.rows);
 }
 
 export async function getPiece(id: string): Promise<Piece | null> {
+  if (shouldUseSupabase()) {
+    let rows: Piece[];
+
+    try {
+      rows = await supabaseRequest<Piece>(
+        piecesPath({
+          select: pieceSelect,
+          id: `eq.${id}`,
+          limit: "1"
+        })
+      );
+    } catch (error) {
+      if (!isMissingNewPieceColumn(error)) {
+        throw error;
+      }
+
+      rows = await supabaseRequest<Piece>(
+        piecesPath({
+          select: legacyPieceSelect,
+          id: `eq.${id}`,
+          limit: "1"
+        })
+      );
+    }
+
+    return rows[0] ? normalizePiece(rows[0]) : null;
+  }
+
   const result = await sql<Piece>`
     SELECT
       id,
@@ -105,6 +320,8 @@ export async function getPiece(id: string): Promise<Piece | null> {
       long_story,
       final_short_story,
       final_long_story,
+      staff_notes,
+      error_message,
       generation_error,
       generation_error_at::text,
       is_edited,
@@ -116,12 +333,22 @@ export async function getPiece(id: string): Promise<Piece | null> {
     LIMIT 1
   `;
 
-  return result.rows[0] ?? null;
+  return result.rows[0] ? normalizePiece(result.rows[0]) : null;
 }
 
 export async function listPiecesForExport(ids: string[]): Promise<ExportPiece[]> {
   if (ids.length === 0) {
     return [];
+  }
+
+  if (shouldUseSupabase()) {
+    return supabaseRequest<ExportPiece>(
+      piecesPath({
+        select: exportSelect,
+        id: `in.(${ids.join(",")})`,
+        order: "created_at.desc"
+      })
+    );
   }
 
   const placeholders = ids.map((_, index) => `$${index + 1}`).join(", ");
@@ -140,6 +367,8 @@ export async function listPiecesForExport(ids: string[]): Promise<ExportPiece[]>
         long_story,
         final_short_story,
         final_long_story,
+        staff_notes,
+        error_message,
         is_edited,
         created_at::text
       FROM pieces
@@ -153,6 +382,16 @@ export async function listPiecesForExport(ids: string[]): Promise<ExportPiece[]>
 }
 
 export async function listApprovedPiecesForExport(): Promise<ExportPiece[]> {
+  if (shouldUseSupabase()) {
+    return supabaseRequest<ExportPiece>(
+      piecesPath({
+        select: exportSelect,
+        status: "eq.approved",
+        order: "created_at.desc"
+      })
+    );
+  }
+
   const result = await sql<ExportPiece>`
     SELECT
       id,
@@ -167,6 +406,8 @@ export async function listApprovedPiecesForExport(): Promise<ExportPiece[]> {
       long_story,
       final_short_story,
       final_long_story,
+      staff_notes,
+      error_message,
       is_edited,
       created_at::text
     FROM pieces
@@ -178,9 +419,30 @@ export async function listApprovedPiecesForExport(): Promise<ExportPiece[]> {
 }
 
 export async function createPiece(imageUrl: string, uploadedBy?: string): Promise<InsertedPiece> {
+  if (shouldUseSupabase()) {
+    const rows = await supabaseRequest<InsertedPiece>(
+      piecesPath({
+        select: "id,image_url,status,created_at"
+      }),
+      {
+        method: "POST",
+        headers: {
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify({
+          image_url: imageUrl,
+          status: "queued",
+          uploaded_by: uploadedBy ?? null
+        })
+      }
+    );
+
+    return rows[0];
+  }
+
   const result = await sql<InsertedPiece>`
     INSERT INTO pieces (image_url, status, uploaded_by)
-    VALUES (${imageUrl}, 'uploaded', ${uploadedBy ?? null})
+    VALUES (${imageUrl}, 'queued', ${uploadedBy ?? null})
     RETURNING id, image_url, status, created_at::text
   `;
 
@@ -188,14 +450,36 @@ export async function createPiece(imageUrl: string, uploadedBy?: string): Promis
 }
 
 export async function setPieceProcessing(id: string): Promise<void> {
+  if (shouldUseSupabase()) {
+    await supabaseRequest<Piece>(
+      piecesPath({
+        select: "id",
+        id: `eq.${id}`
+      }),
+      {
+        method: "PATCH",
+        headers: {
+          Prefer: "return=minimal"
+        },
+        body: JSON.stringify({
+          status: "processing",
+          error_message: null,
+          generation_error: null,
+          generation_error_at: null
+        })
+      }
+    );
+    return;
+  }
+
   await sql`
     UPDATE pieces
-    SET status = 'processing', generation_error = NULL, generation_error_at = NULL
+    SET status = 'processing', error_message = NULL, generation_error = NULL, generation_error_at = NULL
     WHERE id = ${id}
   `;
 }
 
-export async function setPieceDraft(
+export async function setPieceReady(
   id: string,
   story: {
     category: string;
@@ -206,35 +490,96 @@ export async function setPieceDraft(
     longStory: string;
   }
 ): Promise<void> {
+  if (shouldUseSupabase()) {
+    await supabaseRequest<Piece>(
+      piecesPath({
+        select: "id",
+        id: `eq.${id}`
+      }),
+      {
+        method: "PATCH",
+        headers: {
+          Prefer: "return=minimal"
+        },
+        body: JSON.stringify({
+          status: "ready",
+          detected_category: story.category,
+          detected_material: story.material,
+          detected_motifs: JSON.stringify(story.motifs),
+          detected_style: story.style,
+          short_story: story.shortStory,
+          long_story: story.longStory,
+          error_message: null,
+          generation_error: null,
+          generation_error_at: null
+        })
+      }
+    );
+    return;
+  }
+
   await sql`
     UPDATE pieces
     SET
-      status = 'draft',
+      status = 'ready',
       detected_category = ${story.category},
       detected_material = ${story.material},
       detected_motifs = ${JSON.stringify(story.motifs)},
       detected_style = ${story.style},
       short_story = ${story.shortStory},
       long_story = ${story.longStory},
+      error_message = NULL,
       generation_error = NULL,
       generation_error_at = NULL
     WHERE id = ${id}
   `;
 }
 
-export async function updatePieceDraft(id: string, update: PieceStoryUpdate): Promise<Piece | null> {
+export async function updatePieceReady(id: string, update: PieceStoryUpdate): Promise<Piece | null> {
+  if (shouldUseSupabase()) {
+    const currentPiece = await getPiece(id);
+    const rows = await supabaseRequest<Piece>(
+      piecesPath({
+        select: pieceSelect,
+        id: `eq.${id}`
+      }),
+      {
+        method: "PATCH",
+        headers: {
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify({
+          sku: update.sku ?? null,
+          catalog_ref: update.catalogRef ?? null,
+          status: currentPiece?.status === "approved" ? "approved" : "ready",
+          detected_category: update.attributes.category,
+          detected_material: update.attributes.material,
+          detected_motifs: JSON.stringify(update.attributes.motifs),
+          detected_style: update.attributes.style,
+          final_short_story: update.shortStory,
+          final_long_story: update.longStory,
+          staff_notes: update.staffNotes ?? currentPiece?.staff_notes ?? null,
+          is_edited: true
+        })
+      }
+    );
+
+    return rows[0] ? normalizePiece(rows[0]) : null;
+  }
+
   const result = await sql<Piece>`
     UPDATE pieces
     SET
       sku = ${update.sku ?? null},
       catalog_ref = ${update.catalogRef ?? null},
-      status = CASE WHEN status = 'approved' THEN 'approved' ELSE 'draft' END,
+      status = CASE WHEN status = 'approved' THEN 'approved' ELSE 'ready' END,
       detected_category = ${update.attributes.category},
       detected_material = ${update.attributes.material},
       detected_motifs = ${JSON.stringify(update.attributes.motifs)},
       detected_style = ${update.attributes.style},
       final_short_story = ${update.shortStory},
       final_long_story = ${update.longStory},
+      staff_notes = ${update.staffNotes ?? null},
       is_edited = true
     WHERE id = ${id}
     RETURNING
@@ -251,6 +596,8 @@ export async function updatePieceDraft(id: string, update: PieceStoryUpdate): Pr
       long_story,
       final_short_story,
       final_long_story,
+      staff_notes,
+      error_message,
       generation_error,
       generation_error_at::text,
       is_edited,
@@ -259,10 +606,40 @@ export async function updatePieceDraft(id: string, update: PieceStoryUpdate): Pr
       updated_at::text
   `;
 
-  return result.rows[0] ?? null;
+  return result.rows[0] ? normalizePiece(result.rows[0]) : null;
 }
 
 export async function approvePiece(id: string, update: PieceStoryUpdate): Promise<Piece | null> {
+  if (shouldUseSupabase()) {
+    const rows = await supabaseRequest<Piece>(
+      piecesPath({
+        select: pieceSelect,
+        id: `eq.${id}`
+      }),
+      {
+        method: "PATCH",
+        headers: {
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify({
+          sku: update.sku ?? null,
+          catalog_ref: update.catalogRef ?? null,
+          status: "approved",
+          detected_category: update.attributes.category,
+          detected_material: update.attributes.material,
+          detected_motifs: JSON.stringify(update.attributes.motifs),
+          detected_style: update.attributes.style,
+          final_short_story: update.shortStory,
+          final_long_story: update.longStory,
+          staff_notes: update.staffNotes ?? null,
+          is_edited: true
+        })
+      }
+    );
+
+    return rows[0] ? normalizePiece(rows[0]) : null;
+  }
+
   const result = await sql<Piece>`
     UPDATE pieces
     SET
@@ -275,6 +652,7 @@ export async function approvePiece(id: string, update: PieceStoryUpdate): Promis
       detected_style = ${update.attributes.style},
       final_short_story = ${update.shortStory},
       final_long_story = ${update.longStory},
+      staff_notes = ${update.staffNotes ?? null},
       is_edited = true
     WHERE id = ${id}
     RETURNING
@@ -291,6 +669,8 @@ export async function approvePiece(id: string, update: PieceStoryUpdate): Promis
       long_story,
       final_short_story,
       final_long_story,
+      staff_notes,
+      error_message,
       generation_error,
       generation_error_at::text,
       is_edited,
@@ -299,13 +679,33 @@ export async function approvePiece(id: string, update: PieceStoryUpdate): Promis
       updated_at::text
   `;
 
-  return result.rows[0] ?? null;
+  return result.rows[0] ? normalizePiece(result.rows[0]) : null;
 }
 
-export async function revertPieceToDraft(id: string): Promise<Piece | null> {
+export async function updatePieceStaffNotes(id: string, staffNotes: string | null): Promise<Piece | null> {
+  if (shouldUseSupabase()) {
+    const rows = await supabaseRequest<Piece>(
+      piecesPath({
+        select: pieceSelect,
+        id: `eq.${id}`
+      }),
+      {
+        method: "PATCH",
+        headers: {
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify({
+          staff_notes: staffNotes
+        })
+      }
+    );
+
+    return rows[0] ? normalizePiece(rows[0]) : null;
+  }
+
   const result = await sql<Piece>`
     UPDATE pieces
-    SET status = 'draft'
+    SET staff_notes = ${staffNotes}
     WHERE id = ${id}
     RETURNING
       id,
@@ -321,6 +721,8 @@ export async function revertPieceToDraft(id: string): Promise<Piece | null> {
       long_story,
       final_short_story,
       final_long_story,
+      staff_notes,
+      error_message,
       generation_error,
       generation_error_at::text,
       is_edited,
@@ -329,13 +731,88 @@ export async function revertPieceToDraft(id: string): Promise<Piece | null> {
       updated_at::text
   `;
 
-  return result.rows[0] ?? null;
+  return result.rows[0] ? normalizePiece(result.rows[0]) : null;
+}
+
+export async function discardPiece(id: string): Promise<Piece | null> {
+  if (shouldUseSupabase()) {
+    const rows = await supabaseRequest<Piece>(
+      piecesPath({
+        select: pieceSelect,
+        id: `eq.${id}`
+      }),
+      {
+        method: "PATCH",
+        headers: {
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify({
+          status: "discarded"
+        })
+      }
+    );
+
+    return rows[0] ? normalizePiece(rows[0]) : null;
+  }
+
+  const result = await sql<Piece>`
+    UPDATE pieces
+    SET status = 'discarded'
+    WHERE id = ${id}
+    RETURNING
+      id,
+      image_url,
+      sku,
+      catalog_ref,
+      status,
+      detected_category,
+      detected_material,
+      detected_motifs,
+      detected_style,
+      short_story,
+      long_story,
+      final_short_story,
+      final_long_story,
+      staff_notes,
+      error_message,
+      generation_error,
+      generation_error_at::text,
+      is_edited,
+      uploaded_by,
+      created_at::text,
+      updated_at::text
+  `;
+
+  return result.rows[0] ? normalizePiece(result.rows[0]) : null;
 }
 
 export async function setPieceGenerationError(id: string, message: string): Promise<void> {
+  if (shouldUseSupabase()) {
+    await supabaseRequest<Piece>(
+      piecesPath({
+        select: "id",
+        id: `eq.${id}`
+      }),
+      {
+        method: "PATCH",
+        headers: {
+          Prefer: "return=minimal"
+        },
+        body: JSON.stringify({
+          status: "ready",
+          error_message: message,
+          generation_error: message,
+          generation_error_at: new Date().toISOString()
+        })
+      }
+    );
+    return;
+  }
+
   await sql`
     UPDATE pieces
-    SET status = 'uploaded', generation_error = ${message}, generation_error_at = now()
+    SET status = 'ready', error_message = ${message}, generation_error = ${message}, generation_error_at = now()
     WHERE id = ${id}
   `;
 }
+

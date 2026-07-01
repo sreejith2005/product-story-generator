@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseRouteError } from "@/lib/apiErrors";
 import { listApprovedPiecesForExport, listPiecesForExport, type ExportPiece } from "@/lib/pieces";
 
 export const runtime = "nodejs";
@@ -98,6 +99,6 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("Could not export pieces", error);
-    return NextResponse.json({ error: "Could not export pieces." }, { status: 500 });
+    return databaseRouteError(error);
   }
 }

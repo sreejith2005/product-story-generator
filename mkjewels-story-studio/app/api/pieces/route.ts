@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { databaseRouteError } from "@/lib/apiErrors";
 import { listPieces } from "@/lib/pieces";
 
 export const runtime = "nodejs";
@@ -10,6 +11,6 @@ export async function GET() {
     return NextResponse.json({ pieces });
   } catch (error) {
     console.error("Could not list pieces", error);
-    return NextResponse.json({ error: "Could not load pieces." }, { status: 500 });
+    return databaseRouteError(error);
   }
 }

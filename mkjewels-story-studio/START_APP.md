@@ -27,8 +27,8 @@ C:\Users\MIS\Downloads\product-story-generator\mkjewels-story-studio\.env.local
 It should contain:
 
 ```env
-BLOB_READ_WRITE_TOKEN=your_vercel_blob_token
-POSTGRES_URL=your_postgres_connection_string
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 GEMINI_API_KEY=your_gemini_api_key
 GEMINI_MODEL=gemini-3.5-flash
 AI_PROVIDER=gemini
@@ -73,7 +73,7 @@ If `localhost:3000` is already in use, Next.js may offer another port such as `3
 If upload or story generation fails, confirm these values are correct in `.env.local`:
 
 ```env
-BLOB_READ_WRITE_TOKEN=...
-POSTGRES_URL=...
+NEXT_PUBLIC_SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
 GEMINI_API_KEY=...
 ```

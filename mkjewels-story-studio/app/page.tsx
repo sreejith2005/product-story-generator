@@ -19,7 +19,7 @@ export default async function DashboardPage() {
       <AppHeader />
       <div className="mx-auto max-w-7xl px-5 py-10 sm:px-8">
         {dbError ? (
-          <div className="mb-6 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <div className="mb-6 break-words rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
             Database is not ready: {dbError}
           </div>
         ) : null}

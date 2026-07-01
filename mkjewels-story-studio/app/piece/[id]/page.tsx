@@ -31,7 +31,7 @@ export default async function PiecePage({ params }: PiecePageProps) {
         </Link>
 
         <section className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(440px,560px)]">
-          <div className="relative min-h-[420px] overflow-hidden rounded-lg border border-stone/75 bg-cream shadow-sm lg:sticky lg:top-8 lg:h-[calc(100vh-8rem)]">
+          <div className="relative min-h-[320px] overflow-hidden rounded-lg border border-stone/75 bg-cream shadow-sm sm:min-h-[420px] lg:sticky lg:top-8 lg:h-[calc(100vh-8rem)]">
             <Image
               src={piece.image_url}
               alt="Uploaded jewelry piece"

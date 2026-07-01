@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { approvePiece, getPiece, revertPieceToDraft, updatePieceDraft, type PieceStoryUpdate } from "@/lib/pieces";
+import { databaseRouteError } from "@/lib/apiErrors";
+import { approvePiece, discardPiece, getPiece, updatePieceReady, updatePieceStaffNotes, type PieceStoryUpdate } from "@/lib/pieces";
 
 export const runtime = "nodejs";
 
@@ -9,7 +10,7 @@ type PieceRouteProps = {
   };
 };
 
-type PieceAction = "save-draft" | "approve" | "revert-to-draft";
+type PieceAction = "autosave" | "save-draft" | "approve" | "discard";
 
 type PieceUpdateBody = {
   action?: PieceAction;
@@ -18,11 +19,14 @@ type PieceUpdateBody = {
   attributes?: {
     category?: string;
     material?: string;
+    goldTone?: string;
+    contentTone?: string;
     motifs?: unknown;
     style?: string;
   };
   shortStory?: string;
   longStory?: string;
+  staffNotes?: string | null;
 };
 
 function cleanText(value: string | null | undefined) {
@@ -47,11 +51,14 @@ function normalizeUpdate(body: PieceUpdateBody): PieceStoryUpdate | null {
     attributes: {
       category: cleanText(attributes.category) ?? "",
       material: cleanText(attributes.material) ?? "",
+      goldTone: cleanText(attributes.goldTone) ?? "",
+      contentTone: cleanText(attributes.contentTone) ?? "",
       motifs,
       style: cleanText(attributes.style) ?? ""
     },
     shortStory: cleanText(body.shortStory) ?? "",
-    longStory: cleanText(body.longStory) ?? ""
+    longStory: cleanText(body.longStory) ?? "",
+    staffNotes: cleanText(body.staffNotes)
   };
 
   if (!update.attributes.category || !update.attributes.material || !update.attributes.style) {
@@ -62,34 +69,44 @@ function normalizeUpdate(body: PieceUpdateBody): PieceStoryUpdate | null {
 }
 
 export async function PATCH(request: Request, { params }: PieceRouteProps) {
-  const piece = await getPiece(params.id);
+  try {
+    const piece = await getPiece(params.id);
 
-  if (!piece) {
-    return NextResponse.json({ error: "Piece not found." }, { status: 404 });
-  }
+    if (!piece) {
+      return NextResponse.json({ error: "Piece not found." }, { status: 404 });
+    }
 
-  const body = (await request.json().catch(() => ({}))) as PieceUpdateBody;
+    const body = (await request.json().catch(() => ({}))) as PieceUpdateBody;
 
-  if (body.action === "revert-to-draft") {
-    const updatedPiece = await revertPieceToDraft(piece.id);
+    if (body.action === "discard") {
+      const updatedPiece = await discardPiece(piece.id);
+      return NextResponse.json({ piece: updatedPiece });
+    }
+
+    const update = normalizeUpdate(body);
+
+    if (!update) {
+      if (body.action === "autosave" && "staffNotes" in body) {
+        const updatedPiece = await updatePieceStaffNotes(piece.id, cleanText(body.staffNotes));
+        return NextResponse.json({ piece: updatedPiece });
+      }
+
+      return NextResponse.json(
+        { error: "Category, material, style, short story, and long story are required." },
+        { status: 400 }
+      );
+    }
+
+    if (!update.shortStory || !update.longStory) {
+      return NextResponse.json({ error: "Short Story and Long Story cannot be empty." }, { status: 400 });
+    }
+
+    const updatedPiece =
+      body.action === "approve" ? await approvePiece(piece.id, update) : await updatePieceReady(piece.id, update);
+
     return NextResponse.json({ piece: updatedPiece });
+  } catch (error) {
+    console.error("Could not update piece", { pieceId: params.id, error });
+    return databaseRouteError(error);
   }
-
-  const update = normalizeUpdate(body);
-
-  if (!update) {
-    return NextResponse.json(
-      { error: "Category, material, style, short story, and long story are required." },
-      { status: 400 }
-    );
-  }
-
-  if (!update.shortStory || !update.longStory) {
-    return NextResponse.json({ error: "Short Story and Long Story cannot be empty." }, { status: 400 });
-  }
-
-  const updatedPiece =
-    body.action === "approve" ? await approvePiece(piece.id, update) : await updatePieceDraft(piece.id, update);
-
-  return NextResponse.json({ piece: updatedPiece });
 }

@@ -1,3 +1,5 @@
+import { cleanKnownAttributes, hasKnownAttributes, mergeGoldToneIntoMaterial, type KnownJewelryAttributes } from "@/lib/guidedAttributes";
+
 export type JewelryStoryResult = {
   category: string;
   material: string;
@@ -8,13 +10,33 @@ export type JewelryStoryResult = {
 };
 
 type AiProvider = {
-  generateJewelryStory(imageUrl: string): Promise<JewelryStoryResult>;
-  generateJewelryStoryFromAttributes(attributes: JewelryStoryAttributes): Promise<JewelryStoryResult>;
+  generateJewelryStory(imageUrl: string, knownAttributes?: KnownJewelryAttributes, staffNotes?: string): Promise<JewelryStoryResult>;
+  generateJewelryStoryFromAttributes(attributes: JewelryStoryAttributes, staffNotes?: string): Promise<JewelryStoryResult>;
+};
+
+type GeminiResponse = {
+  text?: string;
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+      }>;
+    };
+  }>;
+  steps?: Array<{
+    type?: string;
+    content?: Array<{
+      text?: string;
+      type?: string;
+    }>;
+  }>;
 };
 
 export type JewelryStoryAttributes = {
   category: string;
   material: string;
+  goldTone?: string;
+  contentTone?: string;
   motifs: string[];
   style: string;
 };
@@ -30,8 +52,7 @@ const storySchema = {
   type: "object",
   properties: {
     category: {
-      type: "string",
-      enum: ["ring", "necklace", "earrings", "bangle", "bracelet", "pendant", "mangalsutra", "chain", "other"]
+      type: "string"
     },
     material: {
       type: "string",
@@ -42,8 +63,7 @@ const storySchema = {
       items: { type: "string" }
     },
     style: {
-      type: "string",
-      enum: ["everyday wear", "festive", "bridal", "statement", "unclear"]
+      type: "string"
     },
     shortStory: {
       type: "string"
@@ -72,8 +92,7 @@ Identify:
 Write two MKJewels story drafts grounded only in visually identifiable details. Do not invent carat weights, diamond counts, gemstone counts, exact purity, product price, certification specifics, collection names, or occasion claims that cannot be seen from the photo.
 If a motif or detail is not clearly visible, do not fabricate it.
 shortStory target: 40-60 words for product cards/social captions.
-longStory target: 120-180 words for product page descriptions.
-The long story may include an imaginative narrative angle only when justified by an actually visible motif. Do not force a story onto a plain design.
+longStory target: roughly 6-7 sentences, about 150-220 words as a guide. Give it a natural arc: open on the visual impression, move into craftsmanship/material details, and close on an emotional or occasion-based note such as gifting, everyday elegance, or celebration only when genuinely fitting. Do not force a story onto a plain design.
 
 Brand voice:
 ${brandInstruction}`;
@@ -96,7 +115,7 @@ const textOnlyInstruction = `Return strict JSON only.
 Write two MKJewels story drafts from the staff-confirmed jewelry attributes below. This is a text-only rewrite, so do not infer any visual detail beyond the supplied attributes.
 Do not invent carat weights, diamond counts, gemstone counts, exact purity, product price, certification specifics, collection names, or unsupported claims.
 shortStory target: 40-60 words for product cards/social captions.
-longStory target: 120-180 words for product page descriptions.
+longStory target: roughly 6-7 sentences, about 150-220 words as a guide. Give it a natural arc: open on the visual impression, move into craftsmanship/material details, and close on an emotional or occasion-based note such as gifting, everyday elegance, or celebration only when genuinely fitting.
 
 Brand voice:
 ${brandInstruction}`;
@@ -171,7 +190,110 @@ function parseTextOnlyStoryJson(text: string): Pick<JewelryStoryResult, "shortSt
   return parsed;
 }
 
-async function callGemini(imageUrl: string, retryContext?: string): Promise<JewelryStoryResult> {
+function cleanJsonText(text: string) {
+  return text.replace(/^```json\s*/i, "").replace(/\s*```$/, "").trim();
+}
+
+function getResponseShape(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return String(value);
+  }
+
+  return JSON.stringify(Object.keys(value));
+}
+
+function extractGeminiText(data: GeminiResponse) {
+  const modelOutputText = data?.steps
+    ?.find((step) => step.type === "model_output")
+    ?.content?.find((part) => part.text)?.text;
+
+  return data?.text ?? data?.candidates?.[0]?.content?.parts?.find((part) => part.text)?.text ?? modelOutputText;
+}
+
+function buildToneInstruction(contentTone?: string) {
+  const tone = (contentTone ?? "").trim();
+  const normalized = tone.toLowerCase();
+
+  if (!tone || normalized === "product description") {
+    return "";
+  }
+
+  if (normalized === "story / narrative") {
+    return "\n\nContent tone: Story / narrative. Open with a scene or moment, build a brief narrative around who might wear the piece and when, and close with an emotional note while staying grounded in visible details.";
+  }
+
+  if (normalized === "feature highlights") {
+    return "\n\nContent tone: Feature highlights. Identify 2-3 standout visual or design features. Make the short story a single flowing highlight sentence and expand each feature briefly in the long story.";
+  }
+
+  return `\n\nWrite in the following tone/style: ${tone}`;
+}
+
+function buildStaffNotesInstruction(staffNotes?: string) {
+  const notes = (staffNotes ?? "").trim();
+  return notes ? `\n\nAdditional direction from staff: ${notes}. Please incorporate this into the story.` : "";
+}
+
+function buildVisionInstruction(knownAttributes?: KnownJewelryAttributes, retryContext?: string, staffNotes?: string) {
+  const cleanedAttributes = cleanKnownAttributes(knownAttributes);
+  const hasConfirmedAttributes = hasKnownAttributes(cleanedAttributes);
+  const retryInstruction = retryContext ? `\n\nPrevious JSON parse error: ${retryContext}. Return valid JSON only.` : "";
+  const toneInstruction = buildToneInstruction(cleanedAttributes.contentTone);
+  const staffNotesInstruction = buildStaffNotesInstruction(staffNotes);
+
+  if (!hasConfirmedAttributes) {
+    return `${analysisInstruction}${toneInstruction}${staffNotesInstruction}${retryInstruction}`;
+  }
+
+  const confirmedLines = [
+    cleanedAttributes.category ? `category: ${cleanedAttributes.category}` : null,
+    cleanedAttributes.material ? `material: ${cleanedAttributes.material}` : null,
+    cleanedAttributes.goldTone ? `gold tone: ${cleanedAttributes.goldTone}` : null,
+    cleanedAttributes.contentTone ? `content tone: ${cleanedAttributes.contentTone}` : null,
+    cleanedAttributes.style ? `style: ${cleanedAttributes.style}` : null
+  ].filter(Boolean);
+
+  return `${analysisInstruction}${toneInstruction}${staffNotesInstruction}
+
+Staff-confirmed attributes below are ground truth. Use these exact confirmed values instead of re-deriving them from the image. Use vision only to detect remaining unset attributes, visible motifs, and other visual details that are actually clear.
+If material and gold tone are both confirmed, reflect both in the material field when applicable.
+
+Confirmed attributes:
+${confirmedLines.join("\n")}${retryInstruction}`;
+}
+
+function applyKnownAttributeFallbacks(story: JewelryStoryResult, knownAttributes?: KnownJewelryAttributes): JewelryStoryResult {
+  const cleanedAttributes = cleanKnownAttributes(knownAttributes);
+
+  if (!hasKnownAttributes(cleanedAttributes)) {
+    return story;
+  }
+
+  const nextStory = { ...story };
+
+  if (cleanedAttributes.category) {
+    nextStory.category = cleanedAttributes.category;
+  }
+
+  if (cleanedAttributes.material) {
+    nextStory.material = mergeGoldToneIntoMaterial(cleanedAttributes.material, cleanedAttributes.goldTone);
+  } else if (cleanedAttributes.goldTone) {
+    nextStory.material = mergeGoldToneIntoMaterial(nextStory.material, cleanedAttributes.goldTone);
+  }
+
+  if (cleanedAttributes.style) {
+    nextStory.style = cleanedAttributes.style;
+  }
+
+  return nextStory;
+}
+
+async function callGemini(
+  imageUrl: string,
+  knownAttributes?: KnownJewelryAttributes,
+  staffNotes?: string,
+  retryContext?: string
+): Promise<JewelryStoryResult> {
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
@@ -189,7 +311,7 @@ async function callGemini(imageUrl: string, retryContext?: string): Promise<Jewe
       input: [
         {
           type: "text",
-          text: retryContext ? `${analysisInstruction}\n\nPrevious JSON parse error: ${retryContext}. Return valid JSON only.` : analysisInstruction
+          text: buildVisionInstruction(knownAttributes, retryContext, staffNotes)
         },
         {
           type: "image",
@@ -210,18 +332,19 @@ async function callGemini(imageUrl: string, retryContext?: string): Promise<Jewe
     throw new Error(`Gemini request failed with ${response.status}: ${errorBody.slice(0, 300)}`);
   }
 
-  const payload = (await response.json()) as { output_text?: string };
-  const outputText = payload.output_text;
+  const payload = (await response.json()) as GeminiResponse;
+  const rawText = extractGeminiText(payload);
 
-  if (!outputText) {
-    throw new MalformedJsonError("Gemini response did not include output_text.");
+  if (!rawText) {
+    throw new MalformedJsonError(`Gemini returned no text. Response shape: ${getResponseShape(payload)}`);
   }
 
-  return parseStoryJson(outputText);
+  return applyKnownAttributeFallbacks(parseStoryJson(cleanJsonText(rawText)), knownAttributes);
 }
 
 async function callGeminiTextOnly(
   attributes: JewelryStoryAttributes,
+  staffNotes?: string,
   retryContext?: string
 ): Promise<JewelryStoryResult> {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -241,11 +364,13 @@ async function callGeminiTextOnly(
       input: [
         {
           type: "text",
-          text: `${retryContext ? `${textOnlyInstruction}\n\nPrevious JSON parse error: ${retryContext}. Return valid JSON only.` : textOnlyInstruction}
+          text: `${textOnlyInstruction}${buildToneInstruction(attributes.contentTone)}${buildStaffNotesInstruction(staffNotes)}${retryContext ? `\n\nPrevious JSON parse error: ${retryContext}. Return valid JSON only.` : ""}
 
 Staff-confirmed attributes:
 category: ${attributes.category}
 material: ${attributes.material}
+gold tone: ${attributes.goldTone || "not specified"}
+content tone: ${attributes.contentTone || "Product description"}
 motifs: ${attributes.motifs.length ? attributes.motifs.join(", ") : "none"}
 style: ${attributes.style}`
         }
@@ -263,40 +388,42 @@ style: ${attributes.style}`
     throw new Error(`Gemini request failed with ${response.status}: ${errorBody.slice(0, 300)}`);
   }
 
-  const payload = (await response.json()) as { output_text?: string };
-  const outputText = payload.output_text;
+  const payload = (await response.json()) as GeminiResponse;
+  const rawText = extractGeminiText(payload);
 
-  if (!outputText) {
-    throw new MalformedJsonError("Gemini response did not include output_text.");
+  if (!rawText) {
+    throw new MalformedJsonError(`Gemini returned no text. Response shape: ${getResponseShape(payload)}`);
   }
 
-  const draft = parseTextOnlyStoryJson(outputText);
+  const draft = parseTextOnlyStoryJson(cleanJsonText(rawText));
+  const material = mergeGoldToneIntoMaterial(attributes.material, attributes.goldTone);
 
   return {
     ...attributes,
+    material,
     shortStory: draft.shortStory,
     longStory: draft.longStory
   };
 }
 
 const geminiProvider: AiProvider = {
-  async generateJewelryStory(imageUrl: string) {
+  async generateJewelryStory(imageUrl: string, knownAttributes?: KnownJewelryAttributes, staffNotes?: string) {
     try {
-      return await callGemini(imageUrl);
+      return await callGemini(imageUrl, knownAttributes, staffNotes);
     } catch (error) {
       if (error instanceof SyntaxError || error instanceof MalformedJsonError) {
-        return callGemini(imageUrl, error.message);
+        return callGemini(imageUrl, knownAttributes, staffNotes, error.message);
       }
 
       throw error;
     }
   },
-  async generateJewelryStoryFromAttributes(attributes: JewelryStoryAttributes) {
+  async generateJewelryStoryFromAttributes(attributes: JewelryStoryAttributes, staffNotes?: string) {
     try {
-      return await callGeminiTextOnly(attributes);
+      return await callGeminiTextOnly(attributes, staffNotes);
     } catch (error) {
       if (error instanceof SyntaxError || error instanceof MalformedJsonError) {
-        return callGeminiTextOnly(attributes, error.message);
+        return callGeminiTextOnly(attributes, staffNotes, error.message);
       }
 
       throw error;
@@ -313,12 +440,17 @@ function getProvider(): AiProvider {
   }
 }
 
-export async function generateJewelryStory(imageUrl: string): Promise<JewelryStoryResult> {
-  return getProvider().generateJewelryStory(imageUrl);
+export async function generateJewelryStory(
+  imageUrl: string,
+  knownAttributes?: KnownJewelryAttributes,
+  staffNotes?: string
+): Promise<JewelryStoryResult> {
+  return getProvider().generateJewelryStory(imageUrl, knownAttributes, staffNotes);
 }
 
 export async function generateJewelryStoryFromAttributes(
-  attributes: JewelryStoryAttributes
+  attributes: JewelryStoryAttributes,
+  staffNotes?: string
 ): Promise<JewelryStoryResult> {
-  return getProvider().generateJewelryStoryFromAttributes(attributes);
+  return getProvider().generateJewelryStoryFromAttributes(attributes, staffNotes);
 }
