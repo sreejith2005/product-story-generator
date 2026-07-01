@@ -15,7 +15,6 @@ type AiProvider = {
 };
 
 type GeminiResponse = {
-  text?: string;
   candidates?: Array<{
     content?: {
       parts?: Array<{
@@ -23,13 +22,22 @@ type GeminiResponse = {
       }>;
     };
   }>;
-  steps?: Array<{
-    type?: string;
-    content?: Array<{
-      text?: string;
-      type?: string;
-    }>;
-  }>;
+};
+
+type GeminiPart = {
+  text?: string;
+  inline_data?: {
+    mime_type: string;
+    data: string;
+  };
+};
+
+type JsonSchema = {
+  type: string;
+  properties?: Record<string, JsonSchema>;
+  items?: JsonSchema;
+  required?: string[];
+  description?: string;
 };
 
 export type JewelryStoryAttributes = {
@@ -125,11 +133,17 @@ function getProviderName() {
 }
 
 function getGeminiModel() {
-  return (process.env.GEMINI_MODEL ?? "gemini-3.5-flash").trim();
+  return (process.env.GEMINI_MODEL ?? "gemini-2.0-flash").trim();
 }
 
-function inferMimeType(imageUrl: string) {
-  const pathname = new URL(imageUrl).pathname.toLowerCase();
+function inferMimeTypeFromUrl(imageUrl: string) {
+  let pathname = "";
+
+  try {
+    pathname = new URL(imageUrl).pathname.toLowerCase();
+  } catch {
+    return null;
+  }
 
   if (pathname.endsWith(".png")) {
     return "image/png";
@@ -139,7 +153,35 @@ function inferMimeType(imageUrl: string) {
     return "image/webp";
   }
 
-  return "image/jpeg";
+  if (pathname.endsWith(".jpg") || pathname.endsWith(".jpeg")) {
+    return "image/jpeg";
+  }
+
+  return null;
+}
+
+function normalizeImageMimeType(contentType: string | null) {
+  const mimeType = contentType?.split(";")[0]?.trim().toLowerCase();
+
+  if (mimeType === "image/png" || mimeType === "image/webp" || mimeType === "image/jpeg") {
+    return mimeType;
+  }
+
+  return null;
+}
+
+async function fetchImageForGemini(imageUrl: string) {
+  const response = await fetch(imageUrl);
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Image fetch failed with ${response.status}: ${errorBody.slice(0, 300)}`);
+  }
+
+  const mimeType = inferMimeTypeFromUrl(imageUrl) ?? normalizeImageMimeType(response.headers.get("content-type")) ?? "image/jpeg";
+  const data = Buffer.from(await response.arrayBuffer()).toString("base64");
+
+  return { mimeType, data };
 }
 
 function isJewelryStoryResult(value: unknown): value is JewelryStoryResult {
@@ -203,11 +245,68 @@ function getResponseShape(value: unknown) {
 }
 
 function extractGeminiText(data: GeminiResponse) {
-  const modelOutputText = data?.steps
-    ?.find((step) => step.type === "model_output")
-    ?.content?.find((part) => part.text)?.text;
+  return data.candidates?.[0]?.content?.parts?.[0]?.text;
+}
 
-  return data?.text ?? data?.candidates?.[0]?.content?.parts?.find((part) => part.text)?.text ?? modelOutputText;
+function geminiEndpoint() {
+  const model = encodeURIComponent(getGeminiModel().replace(/^models\//, ""));
+  const apiKey = encodeURIComponent(process.env.GEMINI_API_KEY ?? "");
+
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+}
+
+function toGeminiSchema(schema: JsonSchema): JsonSchema {
+  return {
+    ...schema,
+    type: schema.type.toUpperCase(),
+    properties: schema.properties
+      ? Object.fromEntries(Object.entries(schema.properties).map(([key, value]) => [key, toGeminiSchema(value)]))
+      : undefined,
+    items: schema.items ? toGeminiSchema(schema.items) : undefined
+  };
+}
+
+async function postGeminiGenerateContent(parts: GeminiPart[], schema: JsonSchema) {
+  const response = await fetch(geminiEndpoint(), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          parts
+        }
+      ],
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 1024,
+        responseMimeType: "application/json",
+        responseSchema: toGeminiSchema(schema)
+      },
+      systemInstruction: {
+        parts: [
+          {
+            text: brandInstruction
+          }
+        ]
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Gemini request failed with ${response.status}: ${errorBody.slice(0, 300)}`);
+  }
+
+  const payload = (await response.json()) as GeminiResponse;
+  const rawText = extractGeminiText(payload);
+
+  if (!rawText) {
+    throw new MalformedJsonError(`Gemini returned no text. Response shape: ${getResponseShape(payload)}`);
+  }
+
+  return rawText;
 }
 
 function buildToneInstruction(contentTone?: string) {
@@ -300,44 +399,21 @@ async function callGemini(
     throw new Error("GEMINI_API_KEY is not configured.");
   }
 
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": apiKey
-    },
-    body: JSON.stringify({
-      model: getGeminiModel(),
-      input: [
-        {
-          type: "text",
-          text: buildVisionInstruction(knownAttributes, retryContext, staffNotes)
-        },
-        {
-          type: "image",
-          uri: imageUrl,
-          mime_type: inferMimeType(imageUrl)
+  const image = await fetchImageForGemini(imageUrl);
+  const rawText = await postGeminiGenerateContent(
+    [
+      {
+        inline_data: {
+          mime_type: image.mimeType,
+          data: image.data
         }
-      ],
-      response_format: {
-        type: "text",
-        mime_type: "application/json",
-        schema: storySchema
+      },
+      {
+        text: buildVisionInstruction(knownAttributes, retryContext, staffNotes)
       }
-    })
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Gemini request failed with ${response.status}: ${errorBody.slice(0, 300)}`);
-  }
-
-  const payload = (await response.json()) as GeminiResponse;
-  const rawText = extractGeminiText(payload);
-
-  if (!rawText) {
-    throw new MalformedJsonError(`Gemini returned no text. Response shape: ${getResponseShape(payload)}`);
-  }
+    ],
+    storySchema
+  );
 
   return applyKnownAttributeFallbacks(parseStoryJson(cleanJsonText(rawText)), knownAttributes);
 }
@@ -353,18 +429,10 @@ async function callGeminiTextOnly(
     throw new Error("GEMINI_API_KEY is not configured.");
   }
 
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": apiKey
-    },
-    body: JSON.stringify({
-      model: getGeminiModel(),
-      input: [
-        {
-          type: "text",
-          text: `${textOnlyInstruction}${buildToneInstruction(attributes.contentTone)}${buildStaffNotesInstruction(staffNotes)}${retryContext ? `\n\nPrevious JSON parse error: ${retryContext}. Return valid JSON only.` : ""}
+  const rawText = await postGeminiGenerateContent(
+    [
+      {
+        text: `${textOnlyInstruction}${buildToneInstruction(attributes.contentTone)}${buildStaffNotesInstruction(staffNotes)}${retryContext ? `\n\nPrevious JSON parse error: ${retryContext}. Return valid JSON only.` : ""}
 
 Staff-confirmed attributes:
 category: ${attributes.category}
@@ -373,27 +441,10 @@ gold tone: ${attributes.goldTone || "not specified"}
 content tone: ${attributes.contentTone || "Product description"}
 motifs: ${attributes.motifs.length ? attributes.motifs.join(", ") : "none"}
 style: ${attributes.style}`
-        }
-      ],
-      response_format: {
-        type: "text",
-        mime_type: "application/json",
-        schema: textOnlyStorySchema
       }
-    })
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Gemini request failed with ${response.status}: ${errorBody.slice(0, 300)}`);
-  }
-
-  const payload = (await response.json()) as GeminiResponse;
-  const rawText = extractGeminiText(payload);
-
-  if (!rawText) {
-    throw new MalformedJsonError(`Gemini returned no text. Response shape: ${getResponseShape(payload)}`);
-  }
+    ],
+    textOnlyStorySchema
+  );
 
   const draft = parseTextOnlyStoryJson(cleanJsonText(rawText));
   const material = mergeGoldToneIntoMaterial(attributes.material, attributes.goldTone);

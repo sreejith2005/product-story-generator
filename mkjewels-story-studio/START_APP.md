@@ -30,7 +30,7 @@ It should contain:
 NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-3.5-flash
+GEMINI_MODEL=gemini-2.0-flash
 AI_PROVIDER=gemini
 ```
 
