@@ -13,6 +13,7 @@ type GuidedAttributeInputProps = {
   options: readonly string[];
   onChange: (value: string) => void;
   emptyLabel?: string;
+  required?: boolean;
 };
 
 export function GuidedAttributeInput({
@@ -21,7 +22,8 @@ export function GuidedAttributeInput({
   value,
   options,
   onChange,
-  emptyLabel = "Let AI Decide"
+  emptyLabel = "Let AI Decide",
+  required = false
 }: GuidedAttributeInputProps) {
   const isPreset = useMemo(() => !value || options.includes(value), [options, value]);
   const [isCustom, setIsCustom] = useState(Boolean(value && !isPreset));
@@ -37,7 +39,10 @@ export function GuidedAttributeInput({
 
   return (
     <label className="block">
-      <span className="text-xs font-semibold uppercase tracking-[0.14em] text-ink/45">{label}</span>
+      <span className="text-xs font-semibold uppercase tracking-[0.14em] text-ink/45">
+        {label}
+        {required ? <span className="ml-1 text-red-600">*</span> : null}
+      </span>
       <span className="mt-2 flex min-h-11 gap-2">
         {isCustom ? (
           <>

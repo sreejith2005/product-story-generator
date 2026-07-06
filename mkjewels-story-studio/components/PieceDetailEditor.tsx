@@ -377,8 +377,7 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
                 <button
                   type="button"
                   onClick={() => void regenerateFromAttributes()}
-                  disabled={isRegenerating || !contentTone}
-                  title={!contentTone ? "Select a content tone before generating." : undefined}
+                  disabled={isRegenerating}
                   className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-gold px-4 text-sm font-semibold text-charcoal transition hover:bg-brand-black hover:text-gold disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
                 >
                   {isRegenerating ? <Loader2 className="animate-spin" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
@@ -407,8 +406,7 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
             <button
               type="button"
               onClick={() => void generateFromImage()}
-              disabled={isRegenerating || !contentTone}
-              title={!contentTone ? "Select a content tone before generating." : undefined}
+              disabled={isRegenerating}
               className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-brand-black px-4 text-sm font-semibold text-gold transition hover:bg-ink disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
             >
               {isRegenerating ? <Loader2 className="animate-spin" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
@@ -431,6 +429,7 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
             value={contentTone}
             options={guidedAttributeOptions.contentTone}
             emptyLabel="Select content tone"
+            required
             onChange={setContentTone}
           />
           <Field label="Motifs">

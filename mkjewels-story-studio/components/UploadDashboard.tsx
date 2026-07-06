@@ -447,6 +447,7 @@ export function UploadDashboard({ initialPieces }: UploadDashboardProps) {
               value={knownAttributes.contentTone ?? ""}
               options={guidedAttributeOptions.contentTone}
               emptyLabel="Select content tone"
+              required
               onChange={(value) => updateKnownAttribute("contentTone", value)}
             />
           </div>
@@ -625,8 +626,7 @@ export function UploadDashboard({ initialPieces }: UploadDashboardProps) {
             <button
               type="button"
               onClick={() => void generatePiece(latestPiece)}
-              disabled={latestPiece.status === "processing" || generatingPieceId === latestPiece.id || !knownAttributes.contentTone}
-              title={!knownAttributes.contentTone ? "Select a content tone before generating." : undefined}
+              disabled={latestPiece.status === "processing" || generatingPieceId === latestPiece.id}
               className="inline-flex h-10 items-center gap-2 rounded-md border border-stone bg-white px-4 text-sm font-semibold text-charcoal transition hover:border-gold disabled:cursor-not-allowed disabled:opacity-60"
             >
               {generatingPieceId === latestPiece.id ? <Loader2 className="animate-spin" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
