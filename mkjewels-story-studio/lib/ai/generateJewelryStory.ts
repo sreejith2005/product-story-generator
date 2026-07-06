@@ -34,6 +34,10 @@ type OpenAIOutputItem = {
 };
 
 type OpenAIResponse = {
+  status?: string;
+  incomplete_details?: {
+    reason?: string;
+  };
   output_text?: string;
   output?: OpenAIOutputItem[];
 };
@@ -278,7 +282,15 @@ function parseTextOnlyStoryJson(text: string): Pick<JewelryStoryResult, "shortSt
 }
 
 function cleanJsonText(text: string) {
-  return text.replace(/^```json\s*/i, "").replace(/\s*```$/, "").trim();
+  const cleanedText = text.replace(/^```json\s*/i, "").replace(/\s*```$/, "").trim();
+  const firstBrace = cleanedText.indexOf("{");
+  const lastBrace = cleanedText.lastIndexOf("}");
+
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return cleanedText.slice(firstBrace, lastBrace + 1);
+  }
+
+  return cleanedText;
 }
 
 function getResponseShape(value: unknown) {
@@ -397,7 +409,7 @@ async function postOpenAIResponses(input: OpenAIResponseInput[], schema: JsonSch
       ],
       instructions: instruction,
       temperature: 0.7,
-      max_output_tokens: 1200,
+      max_output_tokens: 2400,
       text: {
         format: {
           type: "json_schema",
@@ -415,6 +427,11 @@ async function postOpenAIResponses(input: OpenAIResponseInput[], schema: JsonSch
   }
 
   const payload = (await response.json()) as OpenAIResponse;
+
+  if (payload.status === "incomplete") {
+    throw new MalformedJsonError(`OpenAI response was incomplete: ${payload.incomplete_details?.reason ?? "unknown reason"}`);
+  }
+
   const rawText = extractOpenAIText(payload);
 
   if (!rawText) {
