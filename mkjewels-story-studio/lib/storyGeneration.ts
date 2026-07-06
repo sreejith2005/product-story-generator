@@ -10,11 +10,19 @@ export function generationErrorMessage(error: unknown) {
       return "Rate limit reached on AI API. Wait a moment and retry.";
     }
 
+    if (/OpenAI request failed with 429/.test(message)) {
+      return "Rate limit reached on AI API. Wait a moment and retry.";
+    }
+
     if (/Gemini request failed with (401|403)/.test(message) || /GEMINI_API_KEY/.test(message)) {
       return "Invalid or missing Gemini API key. Check your GEMINI_API_KEY env var.";
     }
 
-    if (/Gemini request failed with (500|503)/.test(message)) {
+    if (/OpenAI request failed with (401|403)/.test(message) || /OPENAI_API_KEY/.test(message)) {
+      return "Invalid or missing OpenAI API key. Check your OPENAI_API_KEY env var.";
+    }
+
+    if (/(Gemini|OpenAI) request failed with (500|503)/.test(message)) {
       return "AI service temporarily unavailable. Retry in a few minutes.";
     }
 

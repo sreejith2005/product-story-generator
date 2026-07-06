@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
 import { getErrorDetail, isMissingDatabaseConfig, isMissingStorageConfig, jsonError } from "@/lib/apiErrors";
-import { cleanKnownAttributes, type KnownJewelryAttributes } from "@/lib/guidedAttributes";
-import { createPiece, setPieceProcessing } from "@/lib/pieces";
-import { generateDraftForPiece } from "@/lib/storyGeneration";
+import { createPiece } from "@/lib/pieces";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase";
 
 export const runtime = "nodejs";
@@ -16,18 +14,6 @@ function safeFilename(filename: string) {
 
 function storagePathForFile(file: File) {
   return `pieces/${Date.now()}-${safeFilename(file.name)}`;
-}
-
-function parseKnownAttributes(value: FormDataEntryValue | null): KnownJewelryAttributes {
-  if (typeof value !== "string" || !value.trim()) {
-    return {};
-  }
-
-  try {
-    return cleanKnownAttributes(JSON.parse(value) as KnownJewelryAttributes);
-  } catch {
-    return {};
-  }
 }
 
 function uploadFailureStatus(error: unknown) {
@@ -50,7 +36,6 @@ export async function POST(request: Request) {
   try {
     const formData = await request.formData();
     const files = formData.getAll("files").filter((item): item is File => item instanceof File);
-    const knownAttributes = parseKnownAttributes(formData.get("knownAttributes"));
 
     if (!files.length) {
       return NextResponse.json({ error: "No image files were provided." }, { status: 400 });
@@ -92,15 +77,11 @@ export async function POST(request: Request) {
         const { data: publicUrlData } = supabase.storage.from("jewelry-images").getPublicUrl(path);
 
         const piece = await createPiece(publicUrlData.publicUrl);
-        await setPieceProcessing(piece.id);
-        void generateDraftForPiece(piece.id, knownAttributes).catch((error) => {
-          console.error("Story generation failed after upload", { pieceId: piece.id, error });
-        });
 
         pieces.push({
           id: piece.id,
           url: piece.image_url,
-          status: "processing",
+          status: piece.status,
           created_at: piece.created_at
         });
       } catch (error) {

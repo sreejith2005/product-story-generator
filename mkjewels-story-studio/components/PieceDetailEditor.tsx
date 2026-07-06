@@ -43,10 +43,10 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
   const [piece, setPiece] = useState(initialPiece);
   const [sku, setSku] = useState(initialPiece.sku ?? "");
   const [catalogRef, setCatalogRef] = useState(initialPiece.catalog_ref ?? "");
-  const [category, setCategory] = useState(initialPiece.detected_category ?? "Other");
-  const [material, setMaterial] = useState(initialPiece.detected_material ?? "Unclear");
+  const [category, setCategory] = useState(initialPiece.detected_category ?? "");
+  const [material, setMaterial] = useState(initialPiece.detected_material ?? "");
   const [goldTone, setGoldTone] = useState(() => inferGoldToneFromMaterial(initialPiece.detected_material));
-  const [style, setStyle] = useState(initialPiece.detected_style ?? "Unclear");
+  const [style, setStyle] = useState(initialPiece.detected_style ?? "");
   const [contentTone, setContentTone] = useState("");
   const [motifs, setMotifs] = useState<string[]>(() => parseMotifs(initialPiece.detected_motifs));
   const [motifInput, setMotifInput] = useState("");
@@ -149,6 +149,10 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
   }, [patchPiece]);
 
   useEffect(() => {
+    if (!isProcessed) {
+      return;
+    }
+
     if (!didMountRef.current) {
       didMountRef.current = true;
       return;
@@ -159,7 +163,7 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
     }, 1500);
 
     return () => window.clearTimeout(timeoutId);
-  }, [autosave]);
+  }, [autosave, isProcessed]);
 
   async function approve() {
     setIsApproving(true);
@@ -190,6 +194,11 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
   }
 
   async function regenerateFromAttributes() {
+    if (!contentTone) {
+      setNotice("Select a content tone before generating the story.");
+      return;
+    }
+
     setIsRegenerating(true);
     setNotice(null);
 
@@ -236,6 +245,49 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not regenerate stories.");
       router.refresh();
+    } finally {
+      setIsRegenerating(false);
+    }
+  }
+
+  async function generateFromImage() {
+    if (!contentTone) {
+      setNotice("Select a content tone before generating the story.");
+      return;
+    }
+
+    setIsRegenerating(true);
+    setNotice(null);
+
+    try {
+      const response = await fetch(`/api/pieces/${piece.id}/regenerate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          knownAttributes: {
+            category,
+            material,
+            goldTone,
+            style,
+            contentTone
+          },
+          staffNotes: staffNotes.trim()
+        })
+      });
+
+      const payload = (await response.json()) as { status?: Piece["status"]; error?: string };
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Could not start story generation.");
+      }
+
+      setPiece((current) => ({ ...current, status: "processing", error_message: null, generation_error: null }));
+      setNotice("Story generation started.");
+      router.refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not start story generation.");
     } finally {
       setIsRegenerating(false);
     }
@@ -325,7 +377,8 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
                 <button
                   type="button"
                   onClick={() => void regenerateFromAttributes()}
-                  disabled={isRegenerating}
+                  disabled={isRegenerating || !contentTone}
+                  title={!contentTone ? "Select a content tone before generating." : undefined}
                   className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-gold px-4 text-sm font-semibold text-charcoal transition hover:bg-brand-black hover:text-gold disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
                 >
                   {isRegenerating ? <Loader2 className="animate-spin" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
@@ -344,6 +397,27 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
         </section>
       ) : null}
 
+      {piece.status === "queued" ? (
+        <section className="mt-7 rounded-md border border-gold/30 bg-white p-4">
+          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+            <div>
+              <h2 className="text-sm font-semibold text-charcoal">Generate story</h2>
+              <p className="mt-1 text-xs text-ink/55">Starts only when clicked and uses the current selected attributes.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void generateFromImage()}
+              disabled={isRegenerating || !contentTone}
+              title={!contentTone ? "Select a content tone before generating." : undefined}
+              className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-brand-black px-4 text-sm font-semibold text-gold transition hover:bg-ink disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+            >
+              {isRegenerating ? <Loader2 className="animate-spin" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+              Generate story
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       <section className="mt-7 border-t border-stone/70 pt-6">
         <h2 className="font-serif text-2xl text-charcoal">Detected attributes</h2>
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -356,7 +430,7 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
             label="Content tone"
             value={contentTone}
             options={guidedAttributeOptions.contentTone}
-            emptyLabel="Use description"
+            emptyLabel="Select content tone"
             onChange={setContentTone}
           />
           <Field label="Motifs">

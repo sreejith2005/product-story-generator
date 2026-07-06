@@ -29,10 +29,12 @@ It should contain:
 ```env
 NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-2.0-flash
-AI_PROVIDER=gemini
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4.1-mini
+AI_PROVIDER=openai
 ```
+
+For Gemini instead, use `AI_PROVIDER=gemini` with `GEMINI_API_KEY` and `GEMINI_MODEL`.
 
 If `.env.local` is missing, create it from the example:
 
@@ -75,5 +77,6 @@ If upload or story generation fails, confirm these values are correct in `.env.l
 ```env
 NEXT_PUBLIC_SUPABASE_URL=...
 SUPABASE_SERVICE_ROLE_KEY=...
-GEMINI_API_KEY=...
+OPENAI_API_KEY=...
+AI_PROVIDER=openai
 ```

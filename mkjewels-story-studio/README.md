@@ -25,10 +25,12 @@ Required variables:
 ```env
 NEXT_PUBLIC_SUPABASE_URL=...
 SUPABASE_SERVICE_ROLE_KEY=...
-GEMINI_API_KEY=...
-GEMINI_MODEL=gemini-2.0-flash
-AI_PROVIDER=gemini
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-4.1-mini
+AI_PROVIDER=openai
 ```
+
+For Gemini instead, set `AI_PROVIDER=gemini` with `GEMINI_API_KEY` and `GEMINI_MODEL`.
 
 3. Apply the database schema in Supabase:
 
@@ -55,4 +57,4 @@ Open `http://localhost:3000` and upload JPG, PNG, or WEBP images under 10MB each
 5. Enable hosting-level access control before sharing the URL, such as Vercel deployment protection or password protection for the whole site.
 6. Deploy normally through Vercel.
 
-The app uses the Next.js App Router and server-side API routes. Uploaded images are stored in Supabase Storage and each successful upload inserts a `pieces` row, marks it as `processing`, and generates draft story fields server-side with Gemini.
+The app uses the Next.js App Router and server-side API routes. Uploaded images are stored in Supabase Storage and each successful upload inserts a `pieces` row, marks it as `processing`, and generates draft story fields server-side with the configured AI provider.

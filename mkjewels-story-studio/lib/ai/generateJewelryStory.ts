@@ -24,6 +24,30 @@ type GeminiResponse = {
   }>;
 };
 
+type OpenAIOutputContent = {
+  type?: string;
+  text?: string;
+};
+
+type OpenAIOutputItem = {
+  content?: OpenAIOutputContent[];
+};
+
+type OpenAIResponse = {
+  output_text?: string;
+  output?: OpenAIOutputItem[];
+};
+
+type OpenAIResponseInput =
+  | {
+      type: "input_text";
+      text: string;
+    }
+  | {
+      type: "input_image";
+      image_url: string;
+    };
+
 type GeminiPart = {
   text?: string;
   inline_data?: {
@@ -38,6 +62,7 @@ type JsonSchema = {
   items?: JsonSchema;
   required?: string[];
   description?: string;
+  additionalProperties?: boolean;
 };
 
 export type JewelryStoryAttributes = {
@@ -80,7 +105,8 @@ const storySchema = {
       type: "string"
     }
   },
-  required: ["category", "material", "motifs", "style", "shortStory", "longStory"]
+  required: ["category", "material", "motifs", "style", "shortStory", "longStory"],
+  additionalProperties: false
 };
 
 const brandInstruction = `MK Jewels has been a benchmark for design, craftsmanship, quality, and price since 1999.
@@ -115,7 +141,8 @@ const textOnlyStorySchema = {
       type: "string"
     }
   },
-  required: ["shortStory", "longStory"]
+  required: ["shortStory", "longStory"],
+  additionalProperties: false
 };
 
 const textOnlyInstruction = `Return strict JSON only.
@@ -134,6 +161,10 @@ function getProviderName() {
 
 function getGeminiModel() {
   return (process.env.GEMINI_MODEL ?? "gemini-2.0-flash").trim();
+}
+
+function getOpenAIModel() {
+  return (process.env.OPENAI_MODEL ?? "gpt-4.1-mini").trim();
 }
 
 function inferMimeTypeFromUrl(imageUrl: string) {
@@ -184,6 +215,20 @@ async function fetchImageForGemini(imageUrl: string) {
   return { mimeType, data };
 }
 
+async function fetchImageAsDataUrl(imageUrl: string) {
+  const response = await fetch(imageUrl);
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Image fetch failed with ${response.status}: ${errorBody.slice(0, 300)}`);
+  }
+
+  const mimeType = inferMimeTypeFromUrl(imageUrl) ?? normalizeImageMimeType(response.headers.get("content-type")) ?? "image/jpeg";
+  const data = Buffer.from(await response.arrayBuffer()).toString("base64");
+
+  return `data:${mimeType};base64,${data}`;
+}
+
 function isJewelryStoryResult(value: unknown): value is JewelryStoryResult {
   if (!value || typeof value !== "object") {
     return false;
@@ -216,7 +261,7 @@ function parseStoryJson(text: string): JewelryStoryResult {
   const parsed = JSON.parse(text);
 
   if (!isJewelryStoryResult(parsed)) {
-    throw new MalformedJsonError("Gemini returned JSON that does not match the story schema.");
+    throw new MalformedJsonError("AI returned JSON that does not match the story schema.");
   }
 
   return parsed;
@@ -226,7 +271,7 @@ function parseTextOnlyStoryJson(text: string): Pick<JewelryStoryResult, "shortSt
   const parsed = JSON.parse(text);
 
   if (!isStoryDraft(parsed)) {
-    throw new MalformedJsonError("Gemini returned JSON that does not match the text-only story schema.");
+    throw new MalformedJsonError("AI returned JSON that does not match the text-only story schema.");
   }
 
   return parsed;
@@ -246,6 +291,17 @@ function getResponseShape(value: unknown) {
 
 function extractGeminiText(data: GeminiResponse) {
   return data.candidates?.[0]?.content?.parts?.[0]?.text;
+}
+
+function extractOpenAIText(data: OpenAIResponse) {
+  if (data.output_text) {
+    return data.output_text;
+  }
+
+  return data.output
+    ?.flatMap((item) => item.content ?? [])
+    .map((content) => content.text)
+    .find((text): text is string => Boolean(text));
 }
 
 function geminiEndpoint() {
@@ -304,6 +360,65 @@ async function postGeminiGenerateContent(parts: GeminiPart[], schema: JsonSchema
 
   if (!rawText) {
     throw new MalformedJsonError(`Gemini returned no text. Response shape: ${getResponseShape(payload)}`);
+  }
+
+  return rawText;
+}
+
+async function postOpenAIResponses(input: OpenAIResponseInput[], schema: JsonSchema, instruction: string) {
+  const apiKey = process.env.OPENAI_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY is not configured.");
+  }
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: getOpenAIModel(),
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: brandInstruction
+            }
+          ]
+        },
+        {
+          role: "user",
+          content: input
+        }
+      ],
+      instructions: instruction,
+      temperature: 0.7,
+      max_output_tokens: 1200,
+      text: {
+        format: {
+          type: "json_schema",
+          name: "jewelry_story",
+          schema,
+          strict: true
+        }
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`OpenAI request failed with ${response.status}: ${errorBody.slice(0, 300)}`);
+  }
+
+  const payload = (await response.json()) as OpenAIResponse;
+  const rawText = extractOpenAIText(payload);
+
+  if (!rawText) {
+    throw new MalformedJsonError(`OpenAI returned no text. Response shape: ${getResponseShape(payload)}`);
   }
 
   return rawText;
@@ -457,6 +572,66 @@ style: ${attributes.style}`
   };
 }
 
+async function callOpenAI(
+  imageUrl: string,
+  knownAttributes?: KnownJewelryAttributes,
+  staffNotes?: string,
+  retryContext?: string
+): Promise<JewelryStoryResult> {
+  const dataUrl = await fetchImageAsDataUrl(imageUrl);
+  const rawText = await postOpenAIResponses(
+    [
+      {
+        type: "input_image",
+        image_url: dataUrl
+      },
+      {
+        type: "input_text",
+        text: buildVisionInstruction(knownAttributes, retryContext, staffNotes)
+      }
+    ],
+    storySchema,
+    analysisInstruction
+  );
+
+  return applyKnownAttributeFallbacks(parseStoryJson(cleanJsonText(rawText)), knownAttributes);
+}
+
+async function callOpenAITextOnly(
+  attributes: JewelryStoryAttributes,
+  staffNotes?: string,
+  retryContext?: string
+): Promise<JewelryStoryResult> {
+  const rawText = await postOpenAIResponses(
+    [
+      {
+        type: "input_text",
+        text: `${textOnlyInstruction}${buildToneInstruction(attributes.contentTone)}${buildStaffNotesInstruction(staffNotes)}${retryContext ? `\n\nPrevious JSON parse error: ${retryContext}. Return valid JSON only.` : ""}
+
+Staff-confirmed attributes:
+category: ${attributes.category}
+material: ${attributes.material}
+gold tone: ${attributes.goldTone || "not specified"}
+content tone: ${attributes.contentTone || "Product description"}
+motifs: ${attributes.motifs.length ? attributes.motifs.join(", ") : "none"}
+style: ${attributes.style}`
+      }
+    ],
+    textOnlyStorySchema,
+    textOnlyInstruction
+  );
+
+  const draft = parseTextOnlyStoryJson(cleanJsonText(rawText));
+  const material = mergeGoldToneIntoMaterial(attributes.material, attributes.goldTone);
+
+  return {
+    ...attributes,
+    material,
+    shortStory: draft.shortStory,
+    longStory: draft.longStory
+  };
+}
+
 const geminiProvider: AiProvider = {
   async generateJewelryStory(imageUrl: string, knownAttributes?: KnownJewelryAttributes, staffNotes?: string) {
     try {
@@ -482,10 +657,37 @@ const geminiProvider: AiProvider = {
   }
 };
 
+const openaiProvider: AiProvider = {
+  async generateJewelryStory(imageUrl: string, knownAttributes?: KnownJewelryAttributes, staffNotes?: string) {
+    try {
+      return await callOpenAI(imageUrl, knownAttributes, staffNotes);
+    } catch (error) {
+      if (error instanceof SyntaxError || error instanceof MalformedJsonError) {
+        return callOpenAI(imageUrl, knownAttributes, staffNotes, error.message);
+      }
+
+      throw error;
+    }
+  },
+  async generateJewelryStoryFromAttributes(attributes: JewelryStoryAttributes, staffNotes?: string) {
+    try {
+      return await callOpenAITextOnly(attributes, staffNotes);
+    } catch (error) {
+      if (error instanceof SyntaxError || error instanceof MalformedJsonError) {
+        return callOpenAITextOnly(attributes, staffNotes, error.message);
+      }
+
+      throw error;
+    }
+  }
+};
+
 function getProvider(): AiProvider {
   switch (getProviderName()) {
     case "gemini":
       return geminiProvider;
+    case "openai":
+      return openaiProvider;
     default:
       throw new Error(`Unsupported AI_PROVIDER: ${getProviderName()}`);
   }

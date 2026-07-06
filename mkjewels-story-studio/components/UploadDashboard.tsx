@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, ImagePlus, Loader2, UploadCloud } from "lucide-react";
+import { Download, ImagePlus, Loader2, RefreshCw, UploadCloud } from "lucide-react";
 import { GuidedAttributeInput as InlineGuidedAttributeInput } from "@/components/GuidedAttributeInput";
 import { PieceStatusBadge } from "@/components/PieceStatusBadge";
 import { cleanKnownAttributes, guidedAttributeOptions, letAiDecideValue, type KnownJewelryAttributes } from "@/lib/guidedAttributes";
@@ -79,6 +79,7 @@ export function UploadDashboard({ initialPieces }: UploadDashboardProps) {
   const [showDiscarded, setShowDiscarded] = useState(false);
   const [selectedPieceIds, setSelectedPieceIds] = useState<Set<string>>(() => new Set());
   const [exporting, setExporting] = useState<ExportMode | null>(null);
+  const [generatingPieceId, setGeneratingPieceId] = useState<string | null>(null);
 
   const latestPiece = pieces.find((piece) => piece.status !== "discarded");
 
@@ -283,6 +284,50 @@ export function UploadDashboard({ initialPieces }: UploadDashboardProps) {
     }
   }, [knownAttributes]);
 
+  async function generatePiece(piece: Piece) {
+    if (!knownAttributes.contentTone) {
+      setNotice({ type: "error", message: "Select a content tone before generating the story." });
+      return;
+    }
+
+    setGeneratingPieceId(piece.id);
+    setNotice(null);
+
+    try {
+      const response = await fetch(`/api/pieces/${piece.id}/regenerate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          knownAttributes: cleanKnownAttributes(knownAttributes)
+        })
+      });
+
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Could not start story generation.");
+      }
+
+      setPieces((current) =>
+        current.map((currentPiece) =>
+          currentPiece.id === piece.id
+            ? { ...currentPiece, status: "processing", error_message: null, generation_error: null }
+            : currentPiece
+        )
+      );
+      setNotice({ type: "success", message: "Story generation started." });
+    } catch (error) {
+      setNotice({
+        type: "error",
+        message: error instanceof Error ? error.message : "Could not start story generation."
+      });
+    } finally {
+      setGeneratingPieceId(null);
+    }
+  }
+
   return (
     <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_360px]">
       <section className="min-w-0 space-y-8">
@@ -401,7 +446,7 @@ export function UploadDashboard({ initialPieces }: UploadDashboardProps) {
               label="Content tone"
               value={knownAttributes.contentTone ?? ""}
               options={guidedAttributeOptions.contentTone}
-              emptyLabel="Use description"
+              emptyLabel="Select content tone"
               onChange={(value) => updateKnownAttribute("contentTone", value)}
             />
           </div>
@@ -575,14 +620,18 @@ export function UploadDashboard({ initialPieces }: UploadDashboardProps) {
             </div>
             <PieceStatusBadge status={latestPiece.status} />
             <p className="text-sm leading-6 text-ink/65">
-              Open the latest piece to review detected attributes, story drafts, and regeneration controls.
+              Generate from the latest image using the guided attributes selected on this page.
             </p>
-            <Link
-              href={`/piece/${latestPiece.id}`}
-              className="inline-flex h-10 items-center rounded-md border border-stone bg-white px-4 text-sm font-semibold text-charcoal transition hover:border-gold"
+            <button
+              type="button"
+              onClick={() => void generatePiece(latestPiece)}
+              disabled={latestPiece.status === "processing" || generatingPieceId === latestPiece.id || !knownAttributes.contentTone}
+              title={!knownAttributes.contentTone ? "Select a content tone before generating." : undefined}
+              className="inline-flex h-10 items-center gap-2 rounded-md border border-stone bg-white px-4 text-sm font-semibold text-charcoal transition hover:border-gold disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Open piece
-            </Link>
+              {generatingPieceId === latestPiece.id ? <Loader2 className="animate-spin" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+              Generate story
+            </button>
           </div>
         ) : (
           <p className="mt-5 text-sm leading-6 text-ink/65">
