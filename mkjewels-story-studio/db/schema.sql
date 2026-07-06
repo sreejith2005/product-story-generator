@@ -3,6 +3,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE IF NOT EXISTS pieces (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   image_url TEXT NOT NULL,
+  image_hash TEXT,
   sku TEXT,
   catalog_ref TEXT,
   status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'ready', 'approved', 'discarded')),
@@ -33,6 +34,9 @@ ALTER TABLE pieces
 ALTER TABLE pieces
   ADD COLUMN IF NOT EXISTS staff_notes TEXT,
   ADD COLUMN IF NOT EXISTS error_message TEXT;
+
+ALTER TABLE pieces
+  ADD COLUMN IF NOT EXISTS image_hash TEXT;
 
 -- Migration note for the simplified status values:
 -- This maps old values to the new lowercase status values and adds the discarded state.

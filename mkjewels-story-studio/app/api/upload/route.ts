@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import { createHash } from "crypto";
 import { getErrorDetail, isMissingDatabaseConfig, isMissingStorageConfig, jsonError } from "@/lib/apiErrors";
-import { createPiece } from "@/lib/pieces";
+import { createPiece, findDuplicatePieceByImageHash } from "@/lib/pieces";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase";
 
 export const runtime = "nodejs";
@@ -14,6 +15,10 @@ function safeFilename(filename: string) {
 
 function storagePathForFile(file: File) {
   return `pieces/${Date.now()}-${safeFilename(file.name)}`;
+}
+
+function imageHashForBuffer(buffer: Buffer) {
+  return createHash("sha256").update(buffer).digest("hex");
 }
 
 function uploadFailureStatus(error: unknown) {
@@ -63,6 +68,8 @@ export async function POST(request: Request) {
         const supabase = getSupabaseServiceRoleClient();
         const path = storagePathForFile(file);
         const fileBuffer = Buffer.from(await file.arrayBuffer());
+        const imageHash = imageHashForBuffer(fileBuffer);
+        const duplicatePiece = await findDuplicatePieceByImageHash(imageHash);
         const { error: storageError } = await supabase.storage
           .from("jewelry-images")
           .upload(path, fileBuffer, {
@@ -76,13 +83,21 @@ export async function POST(request: Request) {
 
         const { data: publicUrlData } = supabase.storage.from("jewelry-images").getPublicUrl(path);
 
-        const piece = await createPiece(publicUrlData.publicUrl);
+        const piece = await createPiece(publicUrlData.publicUrl, imageHash);
 
         pieces.push({
           id: piece.id,
           url: piece.image_url,
+          image_hash: piece.image_hash,
           status: piece.status,
-          created_at: piece.created_at
+          created_at: piece.created_at,
+          duplicateOf: duplicatePiece
+            ? {
+                id: duplicatePiece.id,
+                status: duplicatePiece.status,
+                created_at: duplicatePiece.created_at
+              }
+            : null
         });
       } catch (error) {
         console.error("Upload failed for file", { fileName: file.name, error });

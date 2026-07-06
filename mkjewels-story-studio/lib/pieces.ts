@@ -5,6 +5,7 @@ export type PieceStatus = "queued" | "processing" | "ready" | "approved" | "disc
 export type Piece = {
   id: string;
   image_url: string;
+  image_hash: string | null;
   sku: string | null;
   catalog_ref: string | null;
   status: PieceStatus;
@@ -26,7 +27,7 @@ export type Piece = {
   updated_at: string;
 };
 
-export type InsertedPiece = Pick<Piece, "id" | "image_url" | "status" | "created_at">;
+export type InsertedPiece = Pick<Piece, "id" | "image_url" | "image_hash" | "status" | "created_at">;
 
 export type PieceAttributes = {
   category: string;
@@ -67,6 +68,7 @@ export type ExportPiece = Pick<
 const pieceSelect = [
   "id",
   "image_url",
+  "image_hash",
   "sku",
   "catalog_ref",
   "status",
@@ -183,7 +185,7 @@ function piecesPath(params: Record<string, string>) {
 }
 
 function isMissingNewPieceColumn(error: unknown) {
-  return error instanceof Error && /column pieces\.(staff_notes|error_message) does not exist/.test(error.message);
+  return error instanceof Error && /column pieces\.(staff_notes|error_message|image_hash) does not exist/.test(error.message);
 }
 
 function normalizeStatus(status: string): PieceStatus {
@@ -208,6 +210,7 @@ function normalizePiece<T extends Piece>(piece: T): T {
     ...piece,
     status: normalizeStatus(piece.status),
     error_message: piece.error_message ?? piece.generation_error ?? null,
+    image_hash: piece.image_hash ?? null,
     staff_notes: piece.staff_notes ?? null
   };
 }
@@ -249,6 +252,7 @@ export async function listPieces(): Promise<Piece[]> {
     SELECT
       id,
       image_url,
+      image_hash,
       sku,
       catalog_ref,
       status,
@@ -309,6 +313,7 @@ export async function getPiece(id: string): Promise<Piece | null> {
     SELECT
       id,
       image_url,
+      image_hash,
       sku,
       catalog_ref,
       status,
@@ -418,32 +423,151 @@ export async function listApprovedPiecesForExport(): Promise<ExportPiece[]> {
   return result.rows;
 }
 
-export async function createPiece(imageUrl: string, uploadedBy?: string): Promise<InsertedPiece> {
+export async function findDuplicatePieceByImageHash(imageHash: string, excludeId?: string): Promise<Piece | null> {
+  if (!imageHash) {
+    return null;
+  }
+
   if (shouldUseSupabase()) {
-    const rows = await supabaseRequest<InsertedPiece>(
-      piecesPath({
-        select: "id,image_url,status,created_at"
-      }),
-      {
-        method: "POST",
-        headers: {
-          Prefer: "return=representation"
-        },
-        body: JSON.stringify({
-          image_url: imageUrl,
-          status: "queued",
-          uploaded_by: uploadedBy ?? null
-        })
+    try {
+      const params: Record<string, string> = {
+        select: pieceSelect,
+        image_hash: `eq.${imageHash}`,
+        status: "neq.discarded",
+        order: "created_at.asc",
+        limit: "1"
+      };
+
+      if (excludeId) {
+        params.id = `neq.${excludeId}`;
       }
-    );
+
+      const rows = await supabaseRequest<Piece>(piecesPath(params));
+      return rows[0] ? normalizePiece(rows[0]) : null;
+    } catch (error) {
+      if (isMissingNewPieceColumn(error)) {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  const result = excludeId
+    ? await sql<Piece>`
+        SELECT
+          id,
+          image_url,
+          image_hash,
+          sku,
+          catalog_ref,
+          status,
+          detected_category,
+          detected_material,
+          detected_motifs,
+          detected_style,
+          short_story,
+          long_story,
+          final_short_story,
+          final_long_story,
+          staff_notes,
+          error_message,
+          generation_error,
+          generation_error_at::text,
+          is_edited,
+          uploaded_by,
+          created_at::text,
+          updated_at::text
+        FROM pieces
+        WHERE image_hash = ${imageHash} AND id <> ${excludeId} AND status <> 'discarded'
+        ORDER BY created_at ASC
+        LIMIT 1
+      `
+    : await sql<Piece>`
+        SELECT
+          id,
+          image_url,
+          image_hash,
+          sku,
+          catalog_ref,
+          status,
+          detected_category,
+          detected_material,
+          detected_motifs,
+          detected_style,
+          short_story,
+          long_story,
+          final_short_story,
+          final_long_story,
+          staff_notes,
+          error_message,
+          generation_error,
+          generation_error_at::text,
+          is_edited,
+          uploaded_by,
+          created_at::text,
+          updated_at::text
+        FROM pieces
+        WHERE image_hash = ${imageHash} AND status <> 'discarded'
+        ORDER BY created_at ASC
+        LIMIT 1
+      `;
+
+  return result.rows[0] ? normalizePiece(result.rows[0]) : null;
+}
+
+export async function createPiece(imageUrl: string, imageHash?: string, uploadedBy?: string): Promise<InsertedPiece> {
+  if (shouldUseSupabase()) {
+    let rows: InsertedPiece[];
+
+    try {
+      rows = await supabaseRequest<InsertedPiece>(
+        piecesPath({
+          select: "id,image_url,image_hash,status,created_at"
+        }),
+        {
+          method: "POST",
+          headers: {
+            Prefer: "return=representation"
+          },
+          body: JSON.stringify({
+            image_url: imageUrl,
+            image_hash: imageHash ?? null,
+            status: "queued",
+            uploaded_by: uploadedBy ?? null
+          })
+        }
+      );
+    } catch (error) {
+      if (!isMissingNewPieceColumn(error)) {
+        throw error;
+      }
+
+      rows = await supabaseRequest<InsertedPiece>(
+        piecesPath({
+          select: "id,image_url,status,created_at"
+        }),
+        {
+          method: "POST",
+          headers: {
+            Prefer: "return=representation"
+          },
+          body: JSON.stringify({
+            image_url: imageUrl,
+            status: "queued",
+            uploaded_by: uploadedBy ?? null
+          })
+        }
+      );
+    }
 
     return rows[0];
   }
 
   const result = await sql<InsertedPiece>`
-    INSERT INTO pieces (image_url, status, uploaded_by)
-    VALUES (${imageUrl}, 'queued', ${uploadedBy ?? null})
-    RETURNING id, image_url, status, created_at::text
+    INSERT INTO pieces (image_url, image_hash, status, uploaded_by)
+    VALUES (${imageUrl}, ${imageHash ?? null}, 'queued', ${uploadedBy ?? null})
+    RETURNING id, image_url, image_hash, status, created_at::text
   `;
 
   return result.rows[0];

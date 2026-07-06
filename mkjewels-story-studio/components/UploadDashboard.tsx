@@ -33,12 +33,14 @@ const maxSize = 10 * 1024 * 1024;
 function normalizeUploadedPiece(item: {
   id: string;
   url: string;
+  image_hash?: string | null;
   status: Piece["status"];
   created_at: string;
 }): Piece {
   return {
     id: item.id,
     image_url: item.url,
+    image_hash: item.image_hash ?? null,
     status: item.status,
     created_at: item.created_at,
     updated_at: item.created_at,
@@ -215,7 +217,19 @@ export function UploadDashboard({ initialPieces }: UploadDashboardProps) {
     return (await response.json().catch(() => ({
       error: "Upload failed",
       detail: "Server returned an invalid response."
-    }))) as { pieces?: Array<{ id: string; url: string; status: Piece["status"]; created_at: string }>; errors?: UploadFileError[]; error?: string; detail?: string };
+    }))) as {
+      pieces?: Array<{
+        id: string;
+        url: string;
+        image_hash?: string | null;
+        status: Piece["status"];
+        created_at: string;
+        duplicateOf?: { id: string; status: Piece["status"]; created_at: string } | null;
+      }>;
+      errors?: UploadFileError[];
+      error?: string;
+      detail?: string;
+    };
   }
 
   const uploadFiles = useCallback(async (fileList: FileList | File[]) => {
@@ -284,7 +298,7 @@ export function UploadDashboard({ initialPieces }: UploadDashboardProps) {
     }
   }, [knownAttributes]);
 
-  async function generatePiece(piece: Piece) {
+  async function generatePiece(piece: Piece, forceDuplicate = false) {
     if (!knownAttributes.contentTone) {
       setNotice({ type: "error", message: "Select a content tone before generating the story." });
       return;
@@ -300,11 +314,27 @@ export function UploadDashboard({ initialPieces }: UploadDashboardProps) {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          knownAttributes: cleanKnownAttributes(knownAttributes)
+          knownAttributes: cleanKnownAttributes(knownAttributes),
+          forceDuplicate
         })
       });
 
-      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        requiresDuplicateConfirmation?: boolean;
+      };
+
+      if (response.status === 409 && payload.requiresDuplicateConfirmation) {
+        const shouldGenerate = window.confirm(
+          payload.error ?? "This image has been uploaded already. Do you want to generate another story for it?"
+        );
+
+        if (shouldGenerate) {
+          await generatePiece(piece, true);
+        }
+
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(payload.error ?? "Could not start story generation.");

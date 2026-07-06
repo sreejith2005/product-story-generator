@@ -250,7 +250,7 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
     }
   }
 
-  async function generateFromImage() {
+  async function generateFromImage(forceDuplicate = false) {
     if (!contentTone) {
       setNotice("Select a content tone before generating the story.");
       return;
@@ -273,11 +273,28 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
             style,
             contentTone
           },
+          forceDuplicate,
           staffNotes: staffNotes.trim()
         })
       });
 
-      const payload = (await response.json()) as { status?: Piece["status"]; error?: string };
+      const payload = (await response.json()) as {
+        status?: Piece["status"];
+        error?: string;
+        requiresDuplicateConfirmation?: boolean;
+      };
+
+      if (response.status === 409 && payload.requiresDuplicateConfirmation) {
+        const shouldGenerate = window.confirm(
+          payload.error ?? "This image has been uploaded already. Do you want to generate another story for it?"
+        );
+
+        if (shouldGenerate) {
+          await generateFromImage(true);
+        }
+
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(payload.error ?? "Could not start story generation.");
