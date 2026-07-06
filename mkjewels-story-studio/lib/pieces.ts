@@ -185,7 +185,12 @@ function piecesPath(params: Record<string, string>) {
 }
 
 function isMissingNewPieceColumn(error: unknown) {
-  return error instanceof Error && /column pieces\.(staff_notes|error_message|image_hash) does not exist/.test(error.message);
+  return (
+    error instanceof Error &&
+    (/column pieces\.(staff_notes|error_message|image_hash) does not exist/.test(error.message) ||
+      /Could not find the '(staff_notes|error_message|image_hash)' column of 'pieces' in the schema cache/.test(error.message) ||
+      /schema cache.*pieces.*(staff_notes|error_message|image_hash)/i.test(error.message))
+  );
 }
 
 function normalizeStatus(status: string): PieceStatus {
@@ -561,7 +566,7 @@ export async function createPiece(imageUrl: string, imageHash?: string, uploaded
       );
     }
 
-    return rows[0];
+    return { ...rows[0], image_hash: rows[0].image_hash ?? null };
   }
 
   const result = await sql<InsertedPiece>`
