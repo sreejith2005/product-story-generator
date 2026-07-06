@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { databaseRouteError } from "@/lib/apiErrors";
 import { cleanKnownAttributes, type KnownJewelryAttributes } from "@/lib/guidedAttributes";
-import { findDuplicatePieceByImageHash, getPiece, setPieceProcessing } from "@/lib/pieces";
+import { findDuplicatePieceByImageHash, getPiece } from "@/lib/pieces";
 import { generateDraftForPiece } from "@/lib/storyGeneration";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 type RegenerateRouteProps = {
   params: {
@@ -57,12 +58,10 @@ export async function POST(request: Request, { params }: RegenerateRouteProps) {
       }
     }
 
-    await setPieceProcessing(piece.id);
-    void generateDraftForPiece(piece.id, cleanKnownAttributes(body.knownAttributes), body.staffNotes).catch((error) => {
-      console.error("Story regeneration failed", { pieceId: piece.id, error });
-    });
+    await generateDraftForPiece(piece.id, cleanKnownAttributes(body.knownAttributes), body.staffNotes);
+    const updatedPiece = await getPiece(piece.id);
 
-    return NextResponse.json({ status: "processing" });
+    return NextResponse.json({ status: updatedPiece?.status ?? "ready", piece: updatedPiece });
   } catch (error) {
     console.error("Could not start story regeneration", { pieceId: params.id, error });
     return databaseRouteError(error);

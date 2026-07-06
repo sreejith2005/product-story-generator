@@ -280,6 +280,7 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
 
       const payload = (await response.json()) as {
         status?: Piece["status"];
+        piece?: Piece | null;
         error?: string;
         requiresDuplicateConfirmation?: boolean;
       };
@@ -300,8 +301,17 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
         throw new Error(payload.error ?? "Could not start story generation.");
       }
 
-      setPiece((current) => ({ ...current, status: "processing", error_message: null, generation_error: null }));
-      setNotice("Story generation started.");
+      if (payload.piece) {
+        setPiece(payload.piece);
+        setCategory(payload.piece.detected_category ?? category);
+        setMaterial(payload.piece.detected_material ?? material);
+        setStyle(payload.piece.detected_style ?? style);
+        setGoldTone(inferGoldToneFromMaterial(payload.piece.detected_material) || goldTone);
+        setShortStory(payload.piece.short_story ?? shortStory);
+        setLongStory(payload.piece.long_story ?? longStory);
+      }
+
+      setNotice(payload.piece?.error_message ? "Story generation failed." : "Story generated.");
       router.refresh();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not start story generation.");
@@ -413,7 +423,7 @@ export function PieceDetailEditor({ initialPiece }: PieceDetailEditorProps) {
         </section>
       ) : null}
 
-      {piece.status === "queued" ? (
+      {piece.status === "queued" || piece.status === "processing" ? (
         <section className="mt-7 rounded-md border border-gold/30 bg-white p-4">
           <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
             <div>

@@ -321,6 +321,7 @@ export function UploadDashboard({ initialPieces }: UploadDashboardProps) {
 
       const payload = (await response.json().catch(() => ({}))) as {
         error?: string;
+        piece?: Piece;
         requiresDuplicateConfirmation?: boolean;
       };
 
@@ -340,14 +341,13 @@ export function UploadDashboard({ initialPieces }: UploadDashboardProps) {
         throw new Error(payload.error ?? "Could not start story generation.");
       }
 
-      setPieces((current) =>
-        current.map((currentPiece) =>
-          currentPiece.id === piece.id
-            ? { ...currentPiece, status: "processing", error_message: null, generation_error: null }
-            : currentPiece
-        )
-      );
-      setNotice({ type: "success", message: "Story generation started." });
+      if (payload.piece) {
+        setPieces((current) => current.map((currentPiece) => (currentPiece.id === piece.id ? payload.piece! : currentPiece)));
+      } else {
+        await refreshPieces();
+      }
+
+      setNotice({ type: "success", message: payload.piece?.error_message ? "Story generation failed." : "Story generated." });
     } catch (error) {
       setNotice({
         type: "error",
@@ -656,7 +656,7 @@ export function UploadDashboard({ initialPieces }: UploadDashboardProps) {
             <button
               type="button"
               onClick={() => void generatePiece(latestPiece)}
-              disabled={latestPiece.status === "processing" || generatingPieceId === latestPiece.id}
+              disabled={generatingPieceId === latestPiece.id}
               className="inline-flex h-10 items-center gap-2 rounded-md border border-stone bg-white px-4 text-sm font-semibold text-charcoal transition hover:border-gold disabled:cursor-not-allowed disabled:opacity-60"
             >
               {generatingPieceId === latestPiece.id ? <Loader2 className="animate-spin" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
