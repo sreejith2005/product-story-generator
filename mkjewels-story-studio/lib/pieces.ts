@@ -224,7 +224,50 @@ function normalizePieces<T extends Piece>(pieces: T[]): T[] {
   return pieces.map(normalizePiece);
 }
 
+async function markStaleProcessingPieces(): Promise<void> {
+  const cutoff = new Date(Date.now() - 90_000).toISOString();
+  const message = "Story generation took too long. Try regenerating.";
+
+  if (shouldUseSupabase()) {
+    try {
+      await supabaseRequest<Piece>(
+        piecesPath({
+          select: "id",
+          status: "eq.processing",
+          updated_at: `lt.${cutoff}`
+        }),
+        {
+          method: "PATCH",
+          headers: {
+            Prefer: "return=minimal"
+          },
+          body: JSON.stringify({
+            status: "ready",
+            error_message: message,
+            generation_error: message,
+            generation_error_at: new Date().toISOString()
+          })
+        }
+      );
+    } catch (error) {
+      if (!isMissingNewPieceColumn(error)) {
+        throw error;
+      }
+    }
+
+    return;
+  }
+
+  await sql`
+    UPDATE pieces
+    SET status = 'ready', error_message = ${message}, generation_error = ${message}, generation_error_at = now()
+    WHERE status = 'processing' AND updated_at < now() - interval '90 seconds'
+  `;
+}
+
 export async function listPieces(): Promise<Piece[]> {
+  await markStaleProcessingPieces();
+
   if (shouldUseSupabase()) {
     try {
       return normalizePieces(
@@ -623,7 +666,8 @@ export async function setPieceReady(
     await supabaseRequest<Piece>(
       piecesPath({
         select: "id",
-        id: `eq.${id}`
+        id: `eq.${id}`,
+        status: "eq.processing"
       }),
       {
         method: "PATCH",
@@ -660,7 +704,7 @@ export async function setPieceReady(
       error_message = NULL,
       generation_error = NULL,
       generation_error_at = NULL
-    WHERE id = ${id}
+    WHERE id = ${id} AND status = 'processing'
   `;
 }
 
@@ -920,7 +964,8 @@ export async function setPieceGenerationError(id: string, message: string): Prom
     await supabaseRequest<Piece>(
       piecesPath({
         select: "id",
-        id: `eq.${id}`
+        id: `eq.${id}`,
+        status: "eq.processing"
       }),
       {
         method: "PATCH",
@@ -941,7 +986,7 @@ export async function setPieceGenerationError(id: string, message: string): Prom
   await sql`
     UPDATE pieces
     SET status = 'ready', error_message = ${message}, generation_error = ${message}, generation_error_at = now()
-    WHERE id = ${id}
+    WHERE id = ${id} AND status = 'processing'
   `;
 }
 

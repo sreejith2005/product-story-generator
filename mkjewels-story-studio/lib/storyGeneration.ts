@@ -2,9 +2,34 @@ import { generateJewelryStory } from "@/lib/ai/generateJewelryStory";
 import type { KnownJewelryAttributes } from "@/lib/guidedAttributes";
 import { getPiece, setPieceGenerationError, setPieceProcessing, setPieceReady } from "@/lib/pieces";
 
+const generationTimeoutMs = 45_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error("Story generation timed out. Try regenerating."));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      }
+    );
+  });
+}
+
 export function generationErrorMessage(error: unknown) {
   if (error instanceof Error) {
     const message = error.message;
+
+    if (/timed out/i.test(message)) {
+      return "Story generation took too long. Try regenerating.";
+    }
 
     if (/Gemini request failed with 429/.test(message)) {
       return "Rate limit reached on AI API. Wait a moment and retry.";
@@ -54,7 +79,7 @@ export async function generateDraftForPiece(
   await setPieceProcessing(id);
 
   try {
-    const story = await generateJewelryStory(piece.image_url, knownAttributes, staffNotes);
+    const story = await withTimeout(generateJewelryStory(piece.image_url, knownAttributes, staffNotes), generationTimeoutMs);
     await setPieceReady(id, story);
   } catch (error) {
     await setPieceGenerationError(id, generationErrorMessage(error));
