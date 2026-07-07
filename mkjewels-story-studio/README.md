@@ -26,11 +26,11 @@ Required variables:
 NEXT_PUBLIC_SUPABASE_URL=...
 SUPABASE_SERVICE_ROLE_KEY=...
 OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-4o
 AI_PROVIDER=openai
 ```
 
-For Gemini instead, set `AI_PROVIDER=gemini` with `GEMINI_API_KEY` and `GEMINI_MODEL`.
+Story generation uses OpenAI Chat Completions with a vision-capable model. `OPENAI_MODEL` defaults to `gpt-4o` and can be changed without code edits.
 
 3. Apply the database schema in Supabase:
 

@@ -30,11 +30,11 @@ It should contain:
 NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-4o
 AI_PROVIDER=openai
 ```
 
-For Gemini instead, use `AI_PROVIDER=gemini` with `GEMINI_API_KEY` and `GEMINI_MODEL`.
+Story generation uses OpenAI Chat Completions with a vision-capable model. `OPENAI_MODEL` defaults to `gpt-4o`.
 
 If `.env.local` is missing, create it from the example:
 
